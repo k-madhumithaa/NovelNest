@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { Link } from 'react-router-dom'
-import { Trash2, BookOpen, Clock, Loader2, BookmarkCheck } from 'lucide-react'
+import { Trash2, BookOpen, Clock, Loader2, BookmarkCheck, CheckCircle2, RotateCcw } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 export default function MyLibrary({ session }) {
   const [libraryBooks, setLibraryBooks] = useState([])
   const [inProgressBooks, setInProgressBooks] = useState([])
-  const [progressMap, setProgressMap] = useState({}) // Stores progress by book_id
+  const [finishedBooks, setFinishedBooks] = useState([]) // ✅ NEW: State for finished books
+  const [progressMap, setProgressMap] = useState({}) 
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -41,14 +42,18 @@ export default function MyLibrary({ session }) {
         })
         setProgressMap(pMap)
 
-        // Filter for "Continue Reading" shelf (Started but not finished)
-        // We consider "started" if page > 1
-        const started = progress
+        // Filter for books started (page > 1)
+        const allStarted = progress
             .filter(p => p.current_page > 1)
             .map(p => ({ ...p.novels, current_page: p.current_page, total_pages: p.total_pages }))
             .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
         
-        setInProgressBooks(started)
+        // ✅ NEW LOGIC: Split into In-Progress vs Finished
+        const inProgress = allStarted.filter(book => !book.total_pages || book.current_page < book.total_pages)
+        const finished = allStarted.filter(book => book.total_pages > 0 && book.current_page >= book.total_pages)
+
+        setInProgressBooks(inProgress)
+        setFinishedBooks(finished)
     }
     
     setLoading(false)
@@ -101,6 +106,35 @@ export default function MyLibrary({ session }) {
           </div>
         )}
 
+        {/* --- ✅ NEW: READ AGAIN SHELF (FINISHED BOOKS) --- */}
+        {finishedBooks.length > 0 && (
+          <div>
+            <h2 className="text-2xl font-serif font-bold text-gray-800 dark:text-white mb-6 flex items-center">
+              <RotateCcw className="mr-3 text-green-500" /> Read Again
+            </h2>
+            <div className="flex gap-6 overflow-x-auto pb-6 custom-scrollbar">
+              {finishedBooks.map(book => (
+                <Link key={book.id} to={`/book/${book.id}`} className="min-w-[200px] w-[200px] group">
+                  <div className="relative rounded-xl overflow-hidden shadow-md h-[300px] mb-3 border border-gray-200 dark:border-gray-700">
+                    <img src={book.cover_url} className="w-full h-full object-cover group-hover:scale-105 transition duration-500 opacity-90" />
+                    
+                    {/* Tick Mark in the Corner */}
+                    <div className="absolute top-3 right-3 bg-green-500 text-white rounded-full p-1 shadow-lg z-10 backdrop-blur-sm border border-green-400">
+                      <CheckCircle2 className="w-5 h-5" />
+                    </div>
+
+                    {/* Completed Badge */}
+                    <div className="absolute bottom-0 left-0 right-0 bg-green-900/90 backdrop-blur-md p-3 border-t border-green-500/30 text-center">
+                       <p className="text-green-300 text-xs font-bold tracking-widest uppercase">Completed</p>
+                    </div>
+                  </div>
+                  <h3 className="font-bold text-gray-900 dark:text-white truncate">{book.title}</h3>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* --- MY LIBRARY GRID --- */}
         <div>
           <h1 className="text-3xl font-serif font-bold text-gray-800 dark:text-white mb-8 flex items-center">
@@ -129,7 +163,7 @@ export default function MyLibrary({ session }) {
                         <h3 className="font-bold text-lg text-gray-900 dark:text-white line-clamp-2 leading-tight">{book.title}</h3>
                         <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{book.author}</p>
                         
-                        {/* 👇 PROGRESS SECTION IN LIBRARY CARD 👇 */}
+                        {/* PROGRESS SECTION IN LIBRARY CARD */}
                         {progress ? (
                             <div className="mt-4">
                                 <div className="flex justify-between text-xs font-bold text-gray-500 dark:text-gray-400 mb-1">
@@ -138,7 +172,7 @@ export default function MyLibrary({ session }) {
                                 </div>
                                 <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5 overflow-hidden">
                                     <div 
-                                        className="bg-green-500 h-1.5 rounded-full" 
+                                        className={`${percent >= 100 ? 'bg-green-500' : 'bg-purple-500'} h-1.5 rounded-full`} 
                                         style={{ width: `${percent > 0 ? percent : 5}%` }}
                                     ></div>
                                 </div>
