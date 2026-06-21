@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import { Plus, Trash2, Edit, Check, X, ShieldAlert, Archive, Users, UserCheck, BookOpen, Star, User, Loader2, Ban, Camera, Save, Search, Filter, Upload, FileText, Image as ImageIcon } from 'lucide-react'
+import { Plus, Trash2, Edit, Check, X, ShieldAlert, Archive, Users, UserCheck, BookOpen, Star, User, Loader2, Ban, Camera, Save, Search, Filter, Upload, FileText, Image as ImageIcon, MessageSquarePlus } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useNavigate } from 'react-router-dom'
 
@@ -21,6 +21,11 @@ export default function Admin() {
   const [activeAuthors, setActiveAuthors] = useState([])
   const [allPublishedBooks, setAllPublishedBooks] = useState([]) 
   
+  // NEW: Assignments State
+  const [myAssignments, setMyAssignments] = useState([])
+  const [assignModal, setAssignModal] = useState({ isOpen: false, authorId: null, authorName: '' })
+  const [assignText, setAssignText] = useState('')
+
   // Live Books Search/Filter State
   const [liveSearchTerm, setLiveSearchTerm] = useState('')
   const [liveSelectedGenre, setLiveSelectedGenre] = useState('All')
@@ -72,6 +77,7 @@ export default function Admin() {
     if (role && user) {
       fetchMyBooks()
       fetchMyProfile() 
+      fetchMyAssignments() // Fetch assignments for the author dashboard
       
       if (role === 'super_admin') {
         fetchStats()
@@ -95,12 +101,42 @@ export default function Admin() {
     }
   }, [liveSearchTerm, liveSelectedGenre])
 
+  // --- 4. REAL-TIME NOTIFICATIONS (SUPER ADMIN ONLY) ---
+  useEffect(() => {
+    if (role !== 'super_admin') return;
+
+    const channel = supabase.channel('admin-alerts')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'book_requests' }, () => {
+        toast.success('🔔 New Book Request from a user!');
+        fetchBookRequests(); // Auto-refresh the list
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'novels' }, (payload) => {
+        if (payload.new.status === 'pending') {
+          toast.success('📖 An Author submitted a new book for approval!');
+          fetchPendingApprovals();
+        }
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'review_flags' }, () => {
+        toast.error('🚩 A user reported a comment!');
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [role]);
 
   // --- FETCH FUNCTIONS ---
   async function fetchMyProfile() {
     if (!user) return
     const { data } = await supabase.from('profiles').select('*').eq('id', user.id).single()
     if (data) setMyProfile(data)
+  }
+
+  async function fetchMyAssignments() {
+    if (!user) return
+    const { data } = await supabase.from('author_assignments').select('*').eq('author_id', user.id).order('created_at', { ascending: false })
+    setMyAssignments(data || [])
   }
 
   async function fetchStats() {
@@ -234,6 +270,28 @@ export default function Admin() {
     fetchMyBooks()
   }
 
+  // --- ASSIGNMENT ACTIONS ---
+  async function submitAssignment(e) {
+    e.preventDefault()
+    if(!assignText.trim()) return
+    const { error } = await supabase.from('author_assignments').insert({
+      author_id: assignModal.authorId,
+      prompt: assignText
+    })
+    if(error) toast.error("Failed to assign book")
+    else {
+       toast.success(`Book assigned to ${assignModal.authorName}!`)
+       setAssignModal({ isOpen: false, authorId: null, authorName: '' })
+       setAssignText('')
+    }
+  }
+
+  async function markAssignmentComplete(id) {
+    await supabase.from('author_assignments').update({ status: 'completed' }).eq('id', id)
+    toast.success("Marked as Completed!")
+    fetchMyAssignments()
+  }
+
   async function handleUpload(e) {
     e.preventDefault()
     if (!user) return
@@ -329,7 +387,7 @@ export default function Admin() {
   }
 
   return (
-    <div className="min-h-screen p-6 md:p-8 transition-colors bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white">
+    <div className="min-h-screen p-6 md:p-8 transition-colors bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white relative">
       <div className="max-w-7xl mx-auto space-y-8">
         
         {/* --- SUPER ADMIN DASHBOARD HEADER --- */}
@@ -424,145 +482,172 @@ export default function Admin() {
 
         {/* --- TAB: MY BOOKS (UPDATED UI) --- */}
         {activeTab === 'my-books' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            
-            {/* --- NEW SOFT UPLOAD FORM --- */}
-            <div className="bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-xl border border-gray-100 dark:border-gray-700 h-fit sticky top-24">
-              <h2 className="text-2xl font-bold mb-6 flex items-center text-gray-800 dark:text-white">
-                  <div className="p-2 bg-purple-100 dark:bg-purple-900/50 rounded-full mr-3">
-                      <Plus className="w-5 h-5 text-purple-600 dark:text-purple-400" />
-                  </div>
-                  {editingId ? 'Edit Book Details' : 'Upload New Book'}
-              </h2>
-              
-              <form onSubmit={handleUpload} className="space-y-5">
-                
-                {/* Title */}
-                <div className="space-y-1">
-                    <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Book Title</label>
-                    <input required value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} 
-                        className="w-full p-4 bg-gray-50 dark:bg-gray-900 border-none rounded-2xl focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-900 focus:bg-white dark:focus:bg-gray-800 transition-all outline-none font-medium text-gray-800 dark:text-white placeholder-gray-400" 
-                        placeholder="e.g. The Midnight Library" 
-                    />
-                </div>
+          <div className="space-y-8">
 
-                {/* Author & Genres */}
-                <div className="space-y-1">
-                    <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Author</label>
-                    <input required value={formData.author} onChange={e => setFormData({...formData, author: e.target.value})} 
-                        className="w-full p-4 bg-gray-50 dark:bg-gray-900 border-none rounded-2xl focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-900 focus:bg-white dark:focus:bg-gray-800 transition-all outline-none font-medium text-gray-800 dark:text-white placeholder-gray-400" 
-                        placeholder="Author Name" 
-                    />
-                </div>
-
-                {/* Modern Chip Selection for Genres */}
-                <div className="space-y-2">
-                    <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Select Genres</label>
-                    <div className="flex flex-wrap gap-2">
-                        {GENRE_OPTIONS.map(g => (
-                            <label key={g} className={`px-4 py-2 rounded-full text-sm font-semibold cursor-pointer transition-all border ${
-                                formData.genre.includes(g) 
-                                ? 'bg-purple-600 text-white border-purple-600 shadow-md transform scale-105' 
-                                : 'bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700'
-                            }`}>
-                                <input type="checkbox" value={g} checked={formData.genre.includes(g)} onChange={handleGenreChange} className="hidden"/>
-                                {g}
-                            </label>
-                        ))}
-                    </div>
-                </div>
-
-                {/* Synopsis */}
-                <div className="space-y-1">
-                     <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Synopsis</label>
-                     <textarea value={formData.synopsis} onChange={e => setFormData({...formData, synopsis: e.target.value})} 
-                        className="w-full p-4 bg-gray-50 dark:bg-gray-900 border-none rounded-2xl focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-900 focus:bg-white dark:focus:bg-gray-800 transition-all outline-none font-medium text-gray-800 dark:text-white placeholder-gray-400 h-32 resize-none leading-relaxed" 
-                        placeholder="Write a compelling summary..." 
-                     />
-                </div>
-
-                {/* Series Info */}
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="col-span-2 space-y-1">
-                      <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Series Name (Optional)</label>
-                      <input value={formData.series_name} onChange={e => setFormData({...formData, series_name: e.target.value})} 
-                        className="w-full p-4 bg-gray-50 dark:bg-gray-900 border-none rounded-2xl focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-900 focus:bg-white dark:focus:bg-gray-800 transition-all outline-none font-medium text-gray-800 dark:text-white placeholder-gray-400" 
-                        placeholder="e.g. Harry Potter" 
-                      />
-                  </div>
-                  <div className="space-y-1">
-                      <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Vol #</label>
-                      <input type="number" value={formData.series_order} onChange={e => setFormData({...formData, series_order: e.target.value})} 
-                        className="w-full p-4 bg-gray-50 dark:bg-gray-900 border-none rounded-2xl focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-900 focus:bg-white dark:focus:bg-gray-800 transition-all outline-none font-medium text-gray-800 dark:text-white placeholder-gray-400 text-center" 
-                        placeholder="1" 
-                      />
-                  </div>
-                </div>
-
-                {/* File Uploads (Soft Style) */}
-                <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                        <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Cover Image</label>
-                        <div className="relative">
-                             <input type="file" accept="image/*" onChange={e => setFormData({...formData, cover: e.target.files[0]})} 
-                                className="block w-full text-sm text-gray-500 dark:text-gray-400
-                                file:mr-4 file:py-2.5 file:px-4
-                                file:rounded-full file:border-0
-                                file:text-xs file:font-bold
-                                file:bg-purple-50 file:text-purple-700
-                                hover:file:bg-purple-100 dark:file:bg-purple-900/30 dark:file:text-purple-300
-                                cursor-pointer"
-                                required={!editingId}
-                             />
-                        </div>
-                    </div>
-                    <div className="space-y-1">
-                        <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">PDF File</label>
-                        <div className="relative">
-                             <input type="file" accept="application/pdf" onChange={e => setFormData({...formData, pdf: e.target.files[0]})} 
-                                className="block w-full text-sm text-gray-500 dark:text-gray-400
-                                file:mr-4 file:py-2.5 file:px-4
-                                file:rounded-full file:border-0
-                                file:text-xs file:font-bold
-                                file:bg-red-50 file:text-red-700
-                                hover:file:bg-red-100 dark:file:bg-red-900/30 dark:file:text-red-300
-                                cursor-pointer"
-                                required={!editingId}
-                             />
-                        </div>
-                    </div>
-                </div>
-
-                {/* Action Button */}
-                <button disabled={uploading} className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold py-4 rounded-2xl transition-all shadow-lg hover:shadow-xl hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center">
-                    {uploading ? <Loader2 className="animate-spin mr-2"/> : <Upload className="mr-2 w-5 h-5"/>}
-                    {uploading ? 'Processing...' : (editingId ? 'Update Book' : 'Publish Novel')}
-                </button>
-                {editingId && <button type="button" onClick={() => {setEditingId(null); setFormData({ title: '', author: '', genre: [], cover: null, pdf: null, series_name: '', series_order: '', synopsis: '' })}} className="w-full text-gray-500 dark:text-gray-400 text-sm hover:text-red-500 transition">Cancel Editing</button>}
-              </form>
-            </div>
-
-            {/* --- MANAGE LIBRARY --- */}
-            <div className="bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-lg border border-gray-100 dark:border-gray-700 h-[800px] flex flex-col">
-               <h2 className="text-2xl font-bold mb-6 text-gray-800 dark:text-white">Manage Library <span className="text-gray-400 ml-2 text-lg font-normal">({myBooks.length})</span></h2>
-               <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-4">
-                 {myBooks.map(book => (
-                   <div key={book.id} className="flex items-start justify-between bg-gray-50 dark:bg-gray-900 p-4 rounded-2xl border border-gray-100 dark:border-gray-700 group hover:border-purple-200 dark:hover:border-purple-800 transition-all">
-                      <div className="flex gap-4">
-                        <img src={book.cover_url} className="w-16 h-24 object-cover rounded-lg shadow-sm" />
-                        <div>
-                           <h3 className="font-bold text-lg text-gray-800 dark:text-white leading-tight">{book.title}</h3>
-                           <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">{book.author}</p>
-                           <span className={`text-[10px] px-2.5 py-1 rounded-full uppercase font-bold tracking-wider ${book.status === 'published' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'}`}>{book.status}</span>
-                        </div>
-                      </div>
-                      <div className="flex flex-col gap-2 opacity-100 md:opacity-0 group-hover:opacity-100 transition-all">
-                         <button onClick={() => handleEditClick(book)} className="p-2 bg-white dark:bg-gray-800 rounded-lg shadow-sm hover:text-blue-600 transition text-gray-400"><Edit className="w-4 h-4"/></button>
-                         <button onClick={() => handleDeleteBook(book.id)} className="p-2 bg-white dark:bg-gray-800 rounded-lg shadow-sm hover:text-red-600 transition text-gray-400"><Trash2 className="w-4 h-4"/></button>
-                      </div>
-                   </div>
-                 ))}
+            {/* NEW: MY ASSIGNMENTS SECTION */}
+            {myAssignments.length > 0 && (
+               <div className="bg-blue-50 dark:bg-blue-900/20 p-6 md:p-8 rounded-3xl border border-blue-100 dark:border-blue-800">
+                 <h2 className="text-xl font-bold mb-6 flex items-center text-blue-800 dark:text-blue-300">
+                   <MessageSquarePlus className="mr-3 w-6 h-6"/> Admin Assignments
+                 </h2>
+                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {myAssignments.map(assign => (
+                       <div key={assign.id} className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col justify-between">
+                          <p className="text-gray-800 dark:text-gray-200 mb-6 text-sm leading-relaxed">{assign.prompt}</p>
+                          <div className="flex justify-between items-center border-t border-gray-100 dark:border-gray-700 pt-4 mt-auto">
+                             <span className={`text-[10px] px-3 py-1.5 rounded-full uppercase font-bold tracking-wider ${assign.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                               {assign.status}
+                             </span>
+                             {assign.status === 'pending' && (
+                               <button onClick={() => markAssignmentComplete(assign.id)} className="text-xs font-bold bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">Mark as Done</button>
+                             )}
+                          </div>
+                       </div>
+                    ))}
+                 </div>
                </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              
+              {/* --- NEW SOFT UPLOAD FORM --- */}
+              <div className="bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-xl border border-gray-100 dark:border-gray-700 h-fit sticky top-24">
+                <h2 className="text-2xl font-bold mb-6 flex items-center text-gray-800 dark:text-white">
+                    <div className="p-2 bg-purple-100 dark:bg-purple-900/50 rounded-full mr-3">
+                        <Plus className="w-5 h-5 text-purple-600 dark:text-purple-400" />
+                    </div>
+                    {editingId ? 'Edit Book Details' : 'Upload New Book'}
+                </h2>
+                
+                <form onSubmit={handleUpload} className="space-y-5">
+                  
+                  {/* Title */}
+                  <div className="space-y-1">
+                      <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Book Title</label>
+                      <input required value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} 
+                          className="w-full p-4 bg-gray-50 dark:bg-gray-900 border-none rounded-2xl focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-900 focus:bg-white dark:focus:bg-gray-800 transition-all outline-none font-medium text-gray-800 dark:text-white placeholder-gray-400" 
+                          placeholder="e.g. The Midnight Library" 
+                      />
+                  </div>
+
+                  {/* Author & Genres */}
+                  <div className="space-y-1">
+                      <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Author</label>
+                      <input required value={formData.author} onChange={e => setFormData({...formData, author: e.target.value})} 
+                          className="w-full p-4 bg-gray-50 dark:bg-gray-900 border-none rounded-2xl focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-900 focus:bg-white dark:focus:bg-gray-800 transition-all outline-none font-medium text-gray-800 dark:text-white placeholder-gray-400" 
+                          placeholder="Author Name" 
+                      />
+                  </div>
+
+                  {/* Modern Chip Selection for Genres */}
+                  <div className="space-y-2">
+                      <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Select Genres</label>
+                      <div className="flex flex-wrap gap-2">
+                          {GENRE_OPTIONS.map(g => (
+                              <label key={g} className={`px-4 py-2 rounded-full text-sm font-semibold cursor-pointer transition-all border ${
+                                  formData.genre.includes(g) 
+                                  ? 'bg-purple-600 text-white border-purple-600 shadow-md transform scale-105' 
+                                  : 'bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700'
+                              }`}>
+                                  <input type="checkbox" value={g} checked={formData.genre.includes(g)} onChange={handleGenreChange} className="hidden"/>
+                                  {g}
+                              </label>
+                          ))}
+                      </div>
+                  </div>
+
+                  {/* Synopsis */}
+                  <div className="space-y-1">
+                       <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Synopsis</label>
+                       <textarea value={formData.synopsis} onChange={e => setFormData({...formData, synopsis: e.target.value})} 
+                          className="w-full p-4 bg-gray-50 dark:bg-gray-900 border-none rounded-2xl focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-900 focus:bg-white dark:focus:bg-gray-800 transition-all outline-none font-medium text-gray-800 dark:text-white placeholder-gray-400 h-32 resize-none leading-relaxed" 
+                          placeholder="Write a compelling summary..." 
+                       />
+                  </div>
+
+                  {/* Series Info */}
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="col-span-2 space-y-1">
+                        <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Series Name (Optional)</label>
+                        <input value={formData.series_name} onChange={e => setFormData({...formData, series_name: e.target.value})} 
+                          className="w-full p-4 bg-gray-50 dark:bg-gray-900 border-none rounded-2xl focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-900 focus:bg-white dark:focus:bg-gray-800 transition-all outline-none font-medium text-gray-800 dark:text-white placeholder-gray-400" 
+                          placeholder="e.g. Harry Potter" 
+                        />
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Vol #</label>
+                        <input type="number" value={formData.series_order} onChange={e => setFormData({...formData, series_order: e.target.value})} 
+                          className="w-full p-4 bg-gray-50 dark:bg-gray-900 border-none rounded-2xl focus:ring-2 focus:ring-purple-200 dark:focus:ring-purple-900 focus:bg-white dark:focus:bg-gray-800 transition-all outline-none font-medium text-gray-800 dark:text-white placeholder-gray-400 text-center" 
+                          placeholder="1" 
+                        />
+                    </div>
+                  </div>
+
+                  {/* File Uploads (Soft Style) */}
+                  <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                          <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">Cover Image</label>
+                          <div className="relative">
+                               <input type="file" accept="image/*" onChange={e => setFormData({...formData, cover: e.target.files[0]})} 
+                                  className="block w-full text-sm text-gray-500 dark:text-gray-400
+                                  file:mr-4 file:py-2.5 file:px-4
+                                  file:rounded-full file:border-0
+                                  file:text-xs file:font-bold
+                                  file:bg-purple-50 file:text-purple-700
+                                  hover:file:bg-purple-100 dark:file:bg-purple-900/30 dark:file:text-purple-300
+                                  cursor-pointer"
+                                  required={!editingId}
+                               />
+                          </div>
+                      </div>
+                      <div className="space-y-1">
+                          <label className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wide ml-1">PDF File</label>
+                          <div className="relative">
+                               <input type="file" accept="application/pdf" onChange={e => setFormData({...formData, pdf: e.target.files[0]})} 
+                                  className="block w-full text-sm text-gray-500 dark:text-gray-400
+                                  file:mr-4 file:py-2.5 file:px-4
+                                  file:rounded-full file:border-0
+                                  file:text-xs file:font-bold
+                                  file:bg-red-50 file:text-red-700
+                                  hover:file:bg-red-100 dark:file:bg-red-900/30 dark:file:text-red-300
+                                  cursor-pointer"
+                                  required={!editingId}
+                               />
+                          </div>
+                      </div>
+                  </div>
+
+                  {/* Action Button */}
+                  <button disabled={uploading} className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold py-4 rounded-2xl transition-all shadow-lg hover:shadow-xl hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center">
+                      {uploading ? <Loader2 className="animate-spin mr-2"/> : <Upload className="mr-2 w-5 h-5"/>}
+                      {uploading ? 'Processing...' : (editingId ? 'Update Book' : 'Publish Novel')}
+                  </button>
+                  {editingId && <button type="button" onClick={() => {setEditingId(null); setFormData({ title: '', author: '', genre: [], cover: null, pdf: null, series_name: '', series_order: '', synopsis: '' })}} className="w-full text-gray-500 dark:text-gray-400 text-sm hover:text-red-500 transition">Cancel Editing</button>}
+                </form>
+              </div>
+
+              {/* --- MANAGE LIBRARY --- */}
+              <div className="bg-white dark:bg-gray-800 p-8 rounded-3xl shadow-lg border border-gray-100 dark:border-gray-700 h-[800px] flex flex-col">
+                 <h2 className="text-2xl font-bold mb-6 text-gray-800 dark:text-white">Manage Library <span className="text-gray-400 ml-2 text-lg font-normal">({myBooks.length})</span></h2>
+                 <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-4">
+                   {myBooks.map(book => (
+                     <div key={book.id} className="flex items-start justify-between bg-gray-50 dark:bg-gray-900 p-4 rounded-2xl border border-gray-100 dark:border-gray-700 group hover:border-purple-200 dark:hover:border-purple-800 transition-all">
+                        <div className="flex gap-4">
+                          <img src={book.cover_url} className="w-16 h-24 object-cover rounded-lg shadow-sm" />
+                          <div>
+                             <h3 className="font-bold text-lg text-gray-800 dark:text-white leading-tight">{book.title}</h3>
+                             <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">{book.author}</p>
+                             <span className={`text-[10px] px-2.5 py-1 rounded-full uppercase font-bold tracking-wider ${book.status === 'published' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'}`}>{book.status}</span>
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-2 opacity-100 md:opacity-0 group-hover:opacity-100 transition-all">
+                           <button onClick={() => handleEditClick(book)} className="p-2 bg-white dark:bg-gray-800 rounded-lg shadow-sm hover:text-blue-600 transition text-gray-400"><Edit className="w-4 h-4"/></button>
+                           <button onClick={() => handleDeleteBook(book.id)} className="p-2 bg-white dark:bg-gray-800 rounded-lg shadow-sm hover:text-red-600 transition text-gray-400"><Trash2 className="w-4 h-4"/></button>
+                        </div>
+                     </div>
+                   ))}
+                 </div>
+              </div>
             </div>
           </div>
         )}
@@ -618,7 +703,7 @@ export default function Admin() {
         {/* --- TAB: LIVE BOOKS (SUPER ADMIN DELETE POWER) --- */}
         {activeTab === 'published' && (
           <div className="space-y-6">
-             {/* ✅ SEARCH & FILTER BAR */}
+             {/* SEARCH & FILTER BAR */}
              <div className="flex flex-col md:flex-row gap-4">
                  <div className="relative flex-1">
                     <Search className="absolute left-4 top-4 text-gray-400 w-5 h-5"/>
@@ -733,15 +818,44 @@ export default function Admin() {
                        <p className="text-[10px] text-teal-600 dark:text-teal-400 mt-1 uppercase font-bold tracking-wider bg-teal-50 dark:bg-teal-900/30 px-2 py-1 rounded-full w-fit">Approved Author</p>
                      </div>
                   </div>
-                  <button onClick={() => handleRevokeAccess(author.id)} className="w-full bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 border border-transparent py-3 rounded-xl flex items-center justify-center transition font-bold text-sm">
-                    <Ban className="w-4 h-4 mr-2"/> Revoke Access
-                  </button>
+                  <div className="flex gap-2 w-full">
+                     <button onClick={() => setAssignModal({isOpen: true, authorId: author.id, authorName: author.nickname || author.real_name || 'Author'})} className="flex-1 bg-blue-50 hover:bg-blue-100 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 text-blue-600 dark:text-blue-400 border border-transparent py-3 rounded-xl flex items-center justify-center transition font-bold text-sm">
+                        <MessageSquarePlus className="w-4 h-4 mr-2"/> Assign Book
+                     </button>
+                     <button onClick={() => handleRevokeAccess(author.id)} className="flex-1 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 border border-transparent py-3 rounded-xl flex items-center justify-center transition font-bold text-sm">
+                       <Ban className="w-4 h-4 mr-2"/> Revoke
+                     </button>
+                  </div>
                </div>
              ))}
           </div>
         )}
 
       </div>
+
+      {/* --- ASSIGNMENT MODAL --- */}
+      {assignModal.isOpen && (
+         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn">
+            <div className="bg-white dark:bg-gray-800 rounded-3xl p-8 w-full max-w-md shadow-2xl">
+               <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Assign Book to {assignModal.authorName}</h3>
+               <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">Describe the book, theme, or series you want them to write.</p>
+               <form onSubmit={submitAssignment}>
+                  <textarea 
+                     value={assignText} 
+                     onChange={e => setAssignText(e.target.value)} 
+                     className="w-full p-4 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 mb-6 h-32 resize-none text-gray-800 dark:text-white"
+                     placeholder="e.g. Please write a dark romance set in a Victorian boarding school..."
+                     required
+                  />
+                  <div className="flex gap-3">
+                     <button type="button" onClick={() => setAssignModal({isOpen: false, authorId: null, authorName: ''})} className="flex-1 py-3 font-bold text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-xl transition">Cancel</button>
+                     <button type="submit" className="flex-1 py-3 font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition">Send Request</button>
+                  </div>
+               </form>
+            </div>
+         </div>
+      )}
+
     </div>
   )
 }
