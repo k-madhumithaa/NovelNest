@@ -184,7 +184,7 @@ export default function MyLibrary({ session }) {
 
                       <div className="flex items-center gap-3 mt-4">
                         <Link to={`/book/${book.id}`} className="flex-1 bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 text-center py-2 rounded-lg text-sm font-bold hover:bg-purple-100 dark:hover:bg-purple-900/50 transition">
-                            {progress ? 'Resume' : 'Read'}
+                            {progress ? (percent >= 100 ? 'Read Again' : 'Resume') : 'Read'}
                         </Link>
                         <button onClick={() => removeFromLibrary(book.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition">
                             <Trash2 className="w-5 h-5" />
